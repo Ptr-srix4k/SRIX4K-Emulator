@@ -3,3 +3,4 @@ In italiano perché non ho voglia di scrivere in inglese.
 
 Proof Of Concept di un emulatore per i tag SRIX4K.   
 Per maggiori informazioni, scaricare il file "Manual.pdf"  
+Il codice dell'emulatore si trova dentro la cartella "Emulator"
