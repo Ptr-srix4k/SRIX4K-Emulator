@@ -1,80 +1,75 @@
 #define F_CPU 13560000UL 
+#define START_CNT 0
+#define CHIP_ID 0x11
 
 #include <avr/io.h>
+#include <util/delay.h>
 #include <avr/interrupt.h>
 #include <stdlib.h>
 #include "key.h"
 #include "serial.h"
 #include "crc.h"
 
-//Timing intervals between bit transition
-unsigned volatile int raw[50];
-//Counter for keeping track of all the timing intervals
-unsigned volatile int raw_cnt = 0;
-//Detect when the receiving phase needs to stop
-unsigned volatile char stop_detd = 0;
 //Data buffer to transmit
-unsigned volatile int data_tx[11];
+unsigned volatile int data_tx[15];
 //Number of data to transmit
 unsigned volatile char MAX_TX=0;
 
-unsigned volatile int tx = 1;
-unsigned volatile char cnt = 2;
+unsigned volatile char tx = 1;
+unsigned volatile char cnt = START_CNT;
 unsigned volatile char c=0;
-
-unsigned volatile char max_c=0;
 unsigned volatile char end_tx = 0;
 
-//Implement rounding function with a lookup table
-unsigned char find_bit(unsigned int val)
+unsigned char rx_buffer[50];
+unsigned char num_rx=0;
+
+void USART_Init(unsigned int ubrr)
 {
-    if ((val>=60) && (val<192))
-        return 1;
-    else if ((val>=192) && (val<320))
-        return 2;
-    else if ((val>=320) && (val<448))
-        return 3;
-    else if ((val>=448) && (val<576))
-        return 4;
-    else if ((val>=576) && (val<704))
-        return 5;
-    else if ((val>=704) && (val<832))
-        return 6;
-    else if ((val>=832) && (val<960))
-        return 7;
-    else if ((val>=960) && (val<1088))
-        return 8;
-    else if ((val>=1088) && (val<1216))
-        return 9;
-    else if ((val>=1216) && (val<1344))
-        return 10;
-    else if ((val>=1344) && (val<1472))
-        return 11;
-    else if ((val>=1472) && (val<1600))
-        return 12;
-    else
-        return 0;
+    /*Set baud rate */
+    UBRR0H = (unsigned char)(ubrr>>8);
+    UBRR0L = (unsigned char)ubrr;
+    /*Enable receiver */
+    UCSR0B = (1<<RXEN0);
+    /* Set frame format: 8data, 1stop bit */
+    UCSR0C = (3<<UCSZ00);
 }
 
-void decode_cmd(unsigned char cmd, unsigned char add,unsigned char data_0,unsigned char data_1,unsigned char data_2,unsigned char data_3)
+void USART_Flush(void)
+{
+    unsigned char dummy;
+    while (UCSR0A & (1<<RXC0)) dummy = UDR0;
+}
+
+unsigned char decode_cmd()
 {
     unsigned char First,Second;
-    char tx_tmp[4];
+    unsigned char cmd, add, data_0, data_1, data_2, data_3;
+    char tx_tmp[8];
+    
+    cmd    = rx_buffer[0];
+    add    = rx_buffer[1];
+    data_0 = rx_buffer[2];
+    data_1 = rx_buffer[3];
+    data_2 = rx_buffer[4];
+    data_3 = rx_buffer[5];
     
     switch(cmd)
-    {
+    {   
+    
         case(0x06):	//Initiate
         
         data_tx[0] = 4095;
         data_tx[1] = 255;
         data_tx[2] = 768;
-        data_tx[3] = (17  + 256) << 1;
-        data_tx[4] = (112 + 256) << 1;
-        data_tx[5] = (241 + 256) << 1;
+        data_tx[3] = (CHIP_ID | 256) << 1;
+        data_tx[4] = (112 | 256) << 1;
+        data_tx[5] = (241 | 256) << 1;
         data_tx[6] = 0;
-        data_tx[7] = 3;
+        data_tx[7] = 7;
         
         MAX_TX = 7;
+        
+        return 1;
         
         break;
         
@@ -83,13 +78,20 @@ void decode_cmd(unsigned char cmd, unsigned char add,unsigned char data_0,unsign
         data_tx[0] = 4095;
         data_tx[1] = 255;
         data_tx[2] = 768;
-        data_tx[3] = (17  + 256) << 1;
-        data_tx[4] = (112 + 256) << 1;
-        data_tx[5] = (241 + 256) << 1;
+        data_tx[3] = (add | 256) << 1;
+        
+        tx_tmp[0] = (add & 255);
+        
+        ComputeCrc(tx_tmp, 1, &First, &Second);
+        
+        data_tx[4] = (First  | 256) << 1;
+        data_tx[5] = (Second | 256) << 1;
         data_tx[6] = 0;
-        data_tx[7] = 3;
+        data_tx[7] = 7;
         
         MAX_TX = 7;
+        
+        return 1;
         
         break;
         
@@ -124,201 +126,203 @@ void decode_cmd(unsigned char cmd, unsigned char add,unsigned char data_0,unsign
         data_tx[8] = (Second    | 256) << 1;
 
         data_tx[9] = 0;
-        data_tx[10] = 3;
+        data_tx[10] = 7;
         
         MAX_TX = 10;
+        
+        return 1;
         
         break;
         
         case(0x09):	//Write
             mem[add] = (unsigned long int)data_3 + ((unsigned long int)data_2 << 8) + ((unsigned long int)data_1 << 16) + ((unsigned long int)data_0 << 24);
+            
+            return 0;
+        break;
+        
+        case(0x0B):	//GET_UID
+        
+            data_tx[0] = 4095;
+            data_tx[1] = 255;
+            data_tx[2] = 768;
+            
+            tx_tmp[7] = ((UID[0]>>24) & 255);
+            tx_tmp[6] = ((UID[0]>>16) & 255);
+            tx_tmp[5] = ((UID[0]>>8)  & 255);
+            tx_tmp[4] = (UID[0]       & 255);
+            tx_tmp[3] = ((UID[1]>>24) & 255);
+            tx_tmp[2] = ((UID[1]>>16) & 255);
+            tx_tmp[1] = ((UID[1]>>8)  & 255);
+            tx_tmp[0] = (UID[1]       & 255);
+            
+            ComputeCrc(tx_tmp, 8, &First, &Second);
+            
+            data_tx[3]  = (tx_tmp[0] | 256) << 1;
+            data_tx[4]  = (tx_tmp[1] | 256) << 1;
+            data_tx[5]  = (tx_tmp[2] | 256) << 1;
+            data_tx[6]  = (tx_tmp[3] | 256) << 1;
+            data_tx[7]  = (tx_tmp[4] | 256) << 1;
+            data_tx[8]  = (tx_tmp[5] | 256) << 1;
+            data_tx[9]  = (tx_tmp[6] | 256) << 1;
+            data_tx[10] = (tx_tmp[7] | 256) << 1;
+            data_tx[11] = (First     | 256) << 1;
+            data_tx[12] = (Second    | 256) << 1;
+            
+            data_tx[13] = 0;
+            data_tx[14] = 7;
+            
+            MAX_TX = 14;
+            
+            return 1;
+            
         break;
         
         default:
-
+            return 0;
         break;
     }
-}
-
-unsigned char decode_bits()	//Return 0 if no response needed
-{
-    unsigned int  bit_v = 0;
-    unsigned int  temp = 0;
-    unsigned char cbit = 0;
-    unsigned char res = 0;
-    unsigned char read = 0;
-    unsigned char write = 0;
-    unsigned char n = 0;
-    unsigned int i_temp = 0;
-    
-    unsigned char Rx_data[5];
-    unsigned char k = 0;
-    
-    unsigned char j=0;
-    unsigned char flag_1=0;
-    unsigned char flag_2=0; 
-    
-    //Find 10 bits and 2 bits inside the timing vector
-    do 
-    {
-        res = find_bit(raw[j]);
-        if (res == 10)
-            flag_1 = 1;
-        else if (flag_1 & (res == 2))
-            flag_2 = 1;
-        else
-            flag_1 = 0;
-        j++;
-    } while (!flag_2 && (j<raw_cnt));
-    
-    i_temp = raw_cnt;
-    
-    //Decode timing vector
-    for (n=j;n<i_temp;n++)
-    {
-        res = find_bit(raw[n]);      
-         
-        temp = (temp >> res) + (bit_v*((1<<res) - 1) << (10-res));
-        cbit = cbit + res;
-        if (cbit==11)
-        {
-            temp = temp & 255;
-            if (read)
-            {
-                decode_cmd(0x08,(unsigned char)temp,0x00,0x00,0x00,0x00);
-                break;
-            }
-            else if (write)
-            {
-                Rx_data[k] = temp;
-                k++;
-                if (k>4)
-                {
-                    decode_cmd(0x09,Rx_data[0],Rx_data[1],Rx_data[2],Rx_data[3],Rx_data[4]);
-                    return 0;
-                }
-            }
-            else
-            {
-                if (temp==0x04 || temp==0x0F || temp==0x0C)
-                    return 0;
-                else if (temp==0x08)
-                    read = 1;
-                else if (temp==0x09)
-                    write = 1;
-                else
-                    decode_cmd((unsigned char)temp,0x00,0x00,0x00,0x00,0x00);            
-            }
-            cbit = 0;
-            temp = 0;
-        }
-        bit_v = bit_v ^ 1;
-    }
-    
-    return 1;
-}
-
-//Comparator setup
-void setup_comparator()
-{
-    //Select AN1 as comparator input (-)
-    ADCSRB = 0;    
-    //Analog Comparator Interrupt Enable 
-    ACSR   = (1 << ACIE); 
-    //AIN1, AIN0 Digital Input Disable
-    DIDR1  = (1 << AIN1D) | (1 << AIN0D);   
 }
 
 //Setup input/output pins
 void setup_pins()
 {
-    //Set all PORTD as input (AN1/AN0) except TX1 and PD5
-    DDRD = (1 << PD1) | (1 << PD5); 
+    //TXD UART as output
+    DDRD = (1 << PD1); 
     //Disable input pull-up resistor       
     PORTD = 0;
-    //Set PB0 as output (for debug)
+    //Set PB0 as software UART output / PB1 as modulator output
     DDRB = (1 << PB0) | (1 << PB1);    
     //Set PortB to zero
     PORTB = 0;
+    
+    DDRC = (1 << PC0);
+    PORTC = 0;
 }
 
 //Setup timer1
 void setup_timer1()
 {    
-    TCNT1 = 0;
-    TIMSK1 = 0;
+    //Stop Timer1 counter
     TCCR1A = 0;
-    //No prescaler
-    TCCR1B = (1 << CS10);
+    TCCR1B = 0;
+    //Clear Timer1 overflow interrupt
+    TIFR1 = (1 << TOV1);
+    //Reset Timer1
+    TCNT1 = 0;
+    
+    //Disable Timer0
+    TCCR0B = 0;
+    TCNT0 = 0;
 }
 
 //Setup timer0
 void setup_timer0()
-{
-    //Set OC0B on compare match, clear OC0B at BOTTOM
-    TCCR0A = (1 << COM0B1) | (1 << COM0B0) | (1 << WGM01) | (1 << WGM00);
-    //No prescaler
-    TCCR0B = (1 << CS00);
-    OCR0B  = 160; //Seems OK
-    TIMSK0 = 0;
-    TCNT0 = 0;
+{    
+    //Start Timer0 counter
+    TCCR0A = 0;
+    TCCR0B = (1 << CS01) | (1 << CS00);
+    //Clear Timer0 overflow interrupt
+    TIFR0 = (1 << TOV0);
+    //Set Timer0
+    TCNT0 = 256-30;
 }
 
-void print_raw_debug()
+void print_debug_rx()
 {
-    unsigned char k;
-    for(k=0;k<raw_cnt;k++)
+    unsigned char i=0;
+    char str[16];
+    
+    for(i=0;i<num_rx;i++)
     {
-        Serial_TX(raw[k]);
-    }
-}
+        utoa(rx_buffer[i],str, 10);   
+        UART_tx_str(str);
+        while(tx_shift_reg);
+        UART_tx_str("\n\r");
+    }  
 
-void print_data_debug()
-{
-    unsigned char k;
-    for(k=0;k<MAX_TX;k++)
-    {
-        Serial_TX(data_tx[k]);
-    }
+    UART_tx_str("\n\r");    
 }
 
 int main(void)
-{
-    //unsigned char i=0;
+{    
+    unsigned char status;
+    unsigned char data;
+    unsigned char SOF=0;
+    unsigned char EnOF=0;
+    unsigned char invalid=0;
+    unsigned char state=0;
+
+    USART_Init(7);//106000 baud
     
-    USART_Init(352);//2406 baud
-    
-    //Comparator setup
-    setup_comparator();
     //Setup input/output pins
     setup_pins();
     //Setup timer1
     setup_timer1();
-    //Setup timer0 (PWM signal)
-    setup_timer0();
+    //Setup hardware UART
+    USART_Init(7);
     //Set interrupt flag
     sei();
+
     
     while (1) 
     {
-       if (stop_detd >= 2)
-       {
-           //Stop Timer1 counter
-           TCCR1A = 0;
-           TCCR1B = 0;
-           //Clear Timer1 overflow interrupt
-           TIFR1 = (1 << TOV1);
-           //Reset Timer1
-           TCNT1 = 0;
-           
-           //Clear comparator interrupt flag 
-           ACSR = (1 << ACI);
-           
-           //Clear stop counter flag
-           stop_detd = 0;  
-           
-           if (decode_bits())
-           {
+        //=================================
+        // RECEIVE DATA
+        //=================================    
+        setup_timer0();
+        //Wait data from serial port
+        while (!(UCSR0A & (1<<RXC0))) {
+            if (TIFR0 & 0x01) //Check timer overflow
+            {
+                //Reset logic
+                state = 0;    
+                num_rx = 0;
+            }        
+        } 
+        status = UCSR0A;
+        data = UDR0;
+        if (status & ((1<<FE0))) //Stop bit = 0
+            invalid = 1;
+        
+        //Stop timer0
+        TCCR0B = 0;
+        
+        switch (state)
+        {
+            case(0):  //Wait SOF    
+                if (invalid)
+                    state = 1;
+                else
+                    state = 0;
+            break;      
+            case(1):  //RX DATA   
+                if (invalid)
+                {
+                    EnOF = 1;
+                    state = 0;
+                }
+                else
+                {
+                    //Save data
+                    rx_buffer[num_rx] = data;
+                    num_rx++;    
+                }
+            break;      
+        }
+        
+        invalid = 0;
+        //=================================
+        //================================= 
+        if (EnOF)
+        {      
+            state = 0;
+            UCSR0B = 0; //Disable RX UART
+            
+            //Decoding is fast, wait some time (it can be zero)
+            _delay_us(50); 
+            
+            if (decode_cmd())
+            {
                 tx = 1;
                 
                 //Halt timers
@@ -355,39 +359,18 @@ int main(void)
                 TCCR1B = 0;
                 TIMSK1 = 0;
                 TIMSK2 = 0;    
-           }
-           
-           raw_cnt = 0;
-           
-           //Enable Timer1
-           TCCR1B = (1 << CS10);
-           //Analog Comparator Interrupt Enable
-           ACSR   = (1 << ACIE);
-       } 
-    }
-}
-
-//ADC comparator interrupt
-ISR(ANALOG_COMP_vect)
-{
-    //Stop the counter
-    TCCR1B = 0;
-    //Save data only if timer1 did not overflow
-	if (!((TIFR1 >> TOV1) & 1))
-		raw[raw_cnt++] = TCNT1;
-    
-    //Reset stop counter when overflow
-    if ((TIFR1 >> TOV1) & 1)
-        stop_detd = 0;
-    else if (TCNT1>1260)
-        stop_detd++;
+            }
+            
+            _delay_us(5);
           
-    //Clear overflow flag    
-	TIFR1 = (1 << TOV1);
-    //Reset the counter
-	TCNT1 = 0;
-    //Start the counter
-	TCCR1B = (1 << CS10);
+            num_rx = 0;  
+            SOF = 0;
+            EnOF = 0;
+            //Enable RX UART
+            UCSR0B = (1<<RXEN0);
+            
+        } 
+    }
 }
 
 ISR(TIMER2_COMPA_vect)
@@ -400,12 +383,14 @@ ISR(TIMER2_COMPA_vect)
     tx = data_tx[c] & 1;
     data_tx[c] = data_tx[c] >> 1;
     
-    if (c==MAX_TX && cnt==1)
+    if (c==MAX_TX && cnt==2)
     {
-        cnt = 2;
+        cnt = START_CNT;
         c = 0;
         end_tx = 1;
         TCCR1B = 0;
+        PORTB = 0;
+        
     }
     else if (cnt == 9)
     {
