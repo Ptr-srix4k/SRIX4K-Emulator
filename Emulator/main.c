@@ -1,6 +1,6 @@
 #define F_CPU 13560000UL 
-#define START_CNT 0
-#define CHIP_ID 0x11
+#define START_CNT 4
+#define TOGGLE_PC0 PINC = (1 << PC0)
 
 #include <avr/io.h>
 #include <util/delay.h>
@@ -23,6 +23,9 @@ unsigned volatile char end_tx = 0;
 unsigned char rx_buffer[50];
 unsigned char num_rx=0;
 
+unsigned char chip_id = 7;
+unsigned char slot_num = 7;
+
 void USART_Init(unsigned int ubrr)
 {
     /*Set baud rate */
@@ -44,7 +47,7 @@ unsigned char decode_cmd()
 {
     unsigned char First,Second;
     unsigned char cmd, add, data_0, data_1, data_2, data_3;
-    char tx_tmp[8];
+    unsigned char tx_tmp[8];
     
     cmd    = rx_buffer[0];
     add    = rx_buffer[1];
@@ -54,83 +57,171 @@ unsigned char decode_cmd()
     data_3 = rx_buffer[5];
     
     switch(cmd)
-    {   
-    
-        case(0x06):	//Initiate
+    {      
+        case(0x06):	
         
-        data_tx[0] = 4095;
-        data_tx[1] = 255;
-        data_tx[2] = 768;
-        data_tx[3] = (CHIP_ID | 256) << 1;
-        data_tx[4] = (112 | 256) << 1;
-        data_tx[5] = (241 | 256) << 1;
-        data_tx[6] = 0;
-        data_tx[7] = 7;
+            if(add == 0x00) //Initiate
+            {
+                //Create pseudorandom chip_id
+                chip_id = (chip_id << 1) | ((((chip_id >> 1) ^ (chip_id >> 2)) ^ ((chip_id >> 3) ^ (chip_id >> 7))) & 0x01);
+                slot_num = (chip_id & 0x0F); 
         
-        MAX_TX = 7;
-        
-        return 1;
+                data_tx[0] = 4095;
+                data_tx[1] = 255;
+                data_tx[2] = 768;
+                data_tx[3] = (chip_id | 256) << 1;  
+                
+                tx_tmp[0] = chip_id;   
+                
+                ComputeCrc(tx_tmp, 1, &First, &Second);
+                
+                data_tx[4] = (First  | 256) << 1;
+                data_tx[5] = (Second | 256) << 1;
+                data_tx[6] = 0;
+                data_tx[7] = 7;
+            
+                MAX_TX = 7;
+            
+                return 1;
+            }
+            else if(add == 0x04) //PCALL16
+            {
+                if (slot_num == 0)
+                {                    
+                    data_tx[0] = 4095;
+                    data_tx[1] = 255;
+                    data_tx[2] = 768;
+                    data_tx[3] = (chip_id | 256) << 1;  
+                
+                    tx_tmp[0] = chip_id;
+                    
+                    ComputeCrc(tx_tmp, 1, &First, &Second);
+                
+                    data_tx[4] = (First  | 256) << 1;
+                    data_tx[5] = (Second | 256) << 1;
+                    data_tx[6] = 0;
+                    data_tx[7] = 7;
+                
+                    MAX_TX = 7;
+                
+                    return 1;
+                }
+                else
+                {
+                    slot_num = ((slot_num << 1) | ((((slot_num) ^ (slot_num >> 3))) & 0x01)) & 0x0F;
+                    return 0;
+                }
+            }
+            else
+                return 0;
         
         break;
         
+        //Slot marker 
+        case(0x16):
+        case(0x26): 
+        case(0x36):
+        case(0x46):
+        case(0x56):
+        case(0x66):
+        case(0x76):
+        case(0x86):
+        case(0x96):
+        case(0xa6):
+        case(0xb6): 
+        case(0xc6):
+        case(0xd6):
+        case(0xe6):
+        case(0xf6):
+        
+            if (((cmd >> 4) & 0x0F) == (slot_num & 0x0F))
+            {
+                data_tx[0] = 4095;
+                data_tx[1] = 255;
+                data_tx[2] = 768;
+                data_tx[3] = (chip_id | 256) << 1;  
+                
+                tx_tmp[0] = chip_id;  
+                
+                ComputeCrc(tx_tmp, 1, &First, &Second);
+                
+                data_tx[4] = (First  | 256) << 1;
+                data_tx[5] = (Second | 256) << 1;
+                data_tx[6] = 0;
+                data_tx[7] = 7;
+                
+                MAX_TX = 7;
+                
+                return 1;
+            }
+            else
+                return 0;
+        
+        break;
+
         case(0x0E):	//Select Chip ID
         
-        data_tx[0] = 4095;
-        data_tx[1] = 255;
-        data_tx[2] = 768;
-        data_tx[3] = (add | 256) << 1;
-        
-        tx_tmp[0] = (add & 255);
-        
-        ComputeCrc(tx_tmp, 1, &First, &Second);
-        
-        data_tx[4] = (First  | 256) << 1;
-        data_tx[5] = (Second | 256) << 1;
-        data_tx[6] = 0;
-        data_tx[7] = 7;
-        
-        MAX_TX = 7;
-        
-        return 1;
+            if (add == chip_id)
+            {
+                data_tx[0] = 4095;
+                data_tx[1] = 255;
+                data_tx[2] = 768;
+                data_tx[3] = (chip_id | 256) << 1;
+                
+                tx_tmp[0] = chip_id;
+                
+                ComputeCrc(tx_tmp, 1, &First, &Second);
+                
+                data_tx[4] = (First  | 256) << 1;
+                data_tx[5] = (Second | 256) << 1;
+                data_tx[6] = 0;
+                data_tx[7] = 7;
+                
+                MAX_TX = 7;
+                
+                return 1;
+            }
+            else
+                return 0;
         
         break;
         
         case(0x08):	//Read
         
-        data_tx[0] = 4095;
-        data_tx[1] = 255;
-        data_tx[2] = 768;
-        
-        if (add==0xFF)
-        {
-            tx_tmp[3] = (mem_FF       & 255);
-            tx_tmp[2] = ((mem_FF>>8)  & 255);
-            tx_tmp[1] = ((mem_FF>>16) & 255);
-            tx_tmp[0] = ((mem_FF>>24) & 255);
-        }
-        else
-        {
-            tx_tmp[3] = (mem[add]       & 255);
-            tx_tmp[2] = ((mem[add]>>8)  & 255);
-            tx_tmp[1] = ((mem[add]>>16) & 255);
-            tx_tmp[0] = ((mem[add]>>24) & 255);
-        }
-        
-        ComputeCrc(tx_tmp, 4, &First, &Second);
-        
-        data_tx[3] = (tx_tmp[0] | 256) << 1;
-        data_tx[4] = (tx_tmp[1] | 256) << 1;
-        data_tx[5] = (tx_tmp[2] | 256) << 1;
-        data_tx[6] = (tx_tmp[3] | 256) << 1;
-        data_tx[7] = (First     | 256) << 1;
-        data_tx[8] = (Second    | 256) << 1;
+            data_tx[0] = 4095;
+            data_tx[1] = 255;
+            data_tx[2] = 768;
+            
+            if (add==0xFF)
+            {
+                tx_tmp[3] = (mem_FF       & 255);
+                tx_tmp[2] = ((mem_FF>>8)  & 255);
+                tx_tmp[1] = ((mem_FF>>16) & 255);
+                tx_tmp[0] = ((mem_FF>>24) & 255);
+            }
+            else
+            {
+                tx_tmp[3] = (mem[add]       & 255);
+                tx_tmp[2] = ((mem[add]>>8)  & 255);
+                tx_tmp[1] = ((mem[add]>>16) & 255);
+                tx_tmp[0] = ((mem[add]>>24) & 255);
+            }
+            
+            ComputeCrc(tx_tmp, 4, &First, &Second);
+            
+            data_tx[3] = (tx_tmp[0] | 256) << 1;
+            data_tx[4] = (tx_tmp[1] | 256) << 1;
+            data_tx[5] = (tx_tmp[2] | 256) << 1;
+            data_tx[6] = (tx_tmp[3] | 256) << 1;
+            data_tx[7] = (First     | 256) << 1;
+            data_tx[8] = (Second    | 256) << 1;
 
-        data_tx[9] = 0;
-        data_tx[10] = 7;
-        
-        MAX_TX = 10;
-        
-        return 1;
+            data_tx[9] = 0;
+            data_tx[10] = 7;
+            
+            MAX_TX = 10;
+            
+            return 1;
         
         break;
         
@@ -251,6 +342,7 @@ int main(void)
     unsigned char EnOF=0;
     unsigned char invalid=0;
     unsigned char state=0;
+    unsigned char error=0;
 
     USART_Init(7);//106000 baud
     
@@ -262,7 +354,6 @@ int main(void)
     USART_Init(7);
     //Set interrupt flag
     sei();
-
     
     while (1) 
     {
@@ -277,6 +368,8 @@ int main(void)
                 //Reset logic
                 state = 0;    
                 num_rx = 0;
+                error = 1;
+                break;
             }        
         } 
         status = UCSR0A;
@@ -290,13 +383,13 @@ int main(void)
         switch (state)
         {
             case(0):  //Wait SOF    
-                if (invalid)
+                if (invalid && !error)
                     state = 1;
                 else
                     state = 0;
             break;      
             case(1):  //RX DATA   
-                if (invalid)
+                if (invalid && !error)
                 {
                     EnOF = 1;
                     state = 0;
@@ -311,6 +404,7 @@ int main(void)
         }
         
         invalid = 0;
+        error = 0;
         //=================================
         //================================= 
         if (EnOF)
@@ -318,8 +412,8 @@ int main(void)
             state = 0;
             UCSR0B = 0; //Disable RX UART
             
-            //Decoding is fast, wait some time (it can be zero)
-            _delay_us(50); 
+            //Wait some time (from CRX14 datasheet => 75us MIN)
+            _delay_us(90); 
             
             if (decode_cmd())
             {
@@ -383,14 +477,14 @@ ISR(TIMER2_COMPA_vect)
     tx = data_tx[c] & 1;
     data_tx[c] = data_tx[c] >> 1;
     
-    if (c==MAX_TX && cnt==2)
+    if (c==MAX_TX && cnt==3)
     {
+        TCCR1B = 0;
+        TCCR1A = _BV(COM1A1) | _BV(COM1A0) | _BV(WGM11);
+        PORTB = 0;
         cnt = START_CNT;
         c = 0;
-        end_tx = 1;
-        TCCR1B = 0;
-        PORTB = 0;
-        
+        end_tx = 1;  
     }
     else if (cnt == 9)
     {
